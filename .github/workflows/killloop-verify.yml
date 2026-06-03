@@ -1,0 +1,43 @@
+# Reports artifact + staging URL to KillLoop after each PR update.
+# KillLoop must already have a run for the same commit (from GitHub PR webhook).
+name: KillLoop Verify
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  report-layers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build -t killloop-demo:${{ github.event.pull_request.head.sha }} .
+
+      - name: Capture digest
+        id: image
+        run: |
+          DIGEST=$(docker inspect --format='{{.Id}}' killloop-demo:${{ github.event.pull_request.head.sha }})
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Report artifact to KillLoop
+        env:
+          KILLLOOP_URL: ${{ secrets.KILLLOOP_URL }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -n "$KILLLOOP_URL" || { echo "Set repo secret KILLLOOP_URL"; exit 1; }
+          curl -sf -X POST "${KILLLOOP_URL%/}/ingest/ci/build" \
+            -H "Content-Type: application/json" \
+            -d "{\"commit_sha\":\"${HEAD_SHA}\",\"artifact_digest\":\"${{ steps.image.outputs.digest }}\",\"expected_digest\":\"${{ steps.image.outputs.digest }}\"}"
+
+      - name: Report staging URL for canary
+        env:
+          KILLLOOP_URL: ${{ secrets.KILLLOOP_URL }}
+          STAGING_URL: ${{ secrets.KILLLOOP_STAGING_URL }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -n "$STAGING_URL" || { echo "Set KILLLOOP_STAGING_URL (e.g. http://your-host:8081/user)"; exit 1; }
+          curl -sf -X POST "${KILLLOOP_URL%/}/webhooks/deployment" \
+            -H "Content-Type: application/json" \
+            -d "{\"commit_sha\":\"${HEAD_SHA}\",\"target_url\":\"${STAGING_URL}\"}"
